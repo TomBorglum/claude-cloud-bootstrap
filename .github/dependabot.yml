@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # This repository's own workflow actions. "ci", not "deps": they execute on this
+  # repo's runners and never reach a consumer, so their bumps must not cut a release.
+  # release-please treats "ci" as a hidden, non-releasable type.
+  #
+  # There is deliberately no second entry and no cooldown. The actions repository needs
+  # both because it publishes action.yml files that run on *other people's* runners; what
+  # this repository publishes is a shell script fetched by URL, and nothing inside it is
+  # an action pin Dependabot can see.
+  #
+  # The versions that DO reach a consumer are pinned in shell and invisible to
+  # Dependabot: the pixi version/build/sha256 triple in cloud/scripts/02-install-pixi.sh,
+  # and direnv's, which floats with the distro by design. CONTRIBUTING.md, "Pinned
+  # versions Dependabot cannot see", says how those get bumped.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # Dependabot appends the colon and space itself, so this yields "ci: ..." -
+      # a subject release-please parses.
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -1,0 +1,6 @@
+# `use_pixi` runs `pixi install` in the workspace it activates, so the cloud fixture
+# materialises an environment inside the checkout when CI evaluates its .envrc.
+# Nothing here creates a .direnv/ - direnv only does that for layout-style directives
+# (layout python, use nix, or an explicit direnv_layout_dir), and none of the
+# directives in payload/direnv/lib uses one.
+test/fixture-cloud/.pixi/
