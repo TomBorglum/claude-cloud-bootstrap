@@ -134,6 +134,16 @@ Two workflows, both required by main-protection:
 Both assert *what a session would notice*, not implementation detail. A new install
 script needs a case in the first; a change to `use_claude_env` needs one in the second.
 
+Neither is path-filtered, and that is deliberate. Each gates the merge through a single
+aggregate job - `cloud-bootstrap-tests-pass` and `claude-env-tests-pass` - and those are
+the contexts `main-protection` requires. A path-filtered workflow cannot gate anything:
+when its filter excludes a pull request the checks stay Pending rather than passing, so
+a required check over one deadlocks that pull request permanently. Running always costs
+under a minute for both.
+
+Any job added to either workflow must be added to that workflow's aggregate `needs:`
+list. A job left out still runs, but gates nothing.
+
 ## Shell conventions
 
 Every script is bash and says why in its header — not what it does, which the code
