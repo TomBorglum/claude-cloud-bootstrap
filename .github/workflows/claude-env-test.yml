@@ -1,0 +1,173 @@
+name: claude-env directive test
+
+# use_claude_env's whole purpose is to write a file into the repository it runs in, so it
+# is the one directive here that can damage one. cloud-bootstrap-test covers its cloud
+# branch, where it must never write; this covers the workstation branch, the way a
+# workstation runs it: real direnv, real jq, real git repositories.
+#
+# Five things are asserted, in order of what would hurt most:
+#   1. a fresh repository gets the template verbatim
+#   2. a second load changes nothing at all (this runs on every cd)
+#   3. an existing settings.json keeps its own keys and its own hooks
+#   4. an unparseable settings.json is left exactly as it was
+#   5. the file lands at the repository root, not beside a nested .envrc
+
+# Deliberately NOT path-filtered. These tests gate the merge via the claude-env-tests-pass job
+# at the end of this file, and a path-filtered workflow cannot do that: when the filter
+# excludes a pull request its checks stay Pending rather than passing, so a required
+# check over a filtered workflow deadlocks that pull request permanently.
+#
+# No secrets are used anywhere here, so a fork pull request running this at
+# contents: read can reach nothing.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scaffold-and-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # install.sh is what a workstation actually runs, so run it rather than reproducing
+      # what it does - that way the assertions below cover the add-on itself and not just
+      # the directive. It installs use_claude_env and its template and nothing else: the
+      # runtime directives belong to wsl-cloud-init, and no assertion here needs them.
+      # jq comes preinstalled on the runner image, which is why only direnv is installed.
+      - name: Install direnv and run the add-on
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq direnv
+          ./install.sh
+          # The runner is not root, so install.sh's own guard did not fire and the payload
+          # landed in the runner's home, flat, where direnv's non-recursive glob finds it.
+          test -f ~/.config/direnv/lib/env.sh
+          test -f ~/.config/claude/templates/settings.json
+          # The directive must never take the cloud branch here.
+          test ! -e /usr/local/bin/cloud-bootstrap-refresh
+
+      - name: A fresh repository gets the template verbatim, and a reload changes nothing
+        run: |
+          set -euo pipefail
+          tpl=~/.config/claude/templates/settings.json
+          repo="$(mktemp -d)"
+          git -C "$repo" init -q
+          printf 'use claude_env\n' > "$repo/.envrc"
+          cd "$repo"
+          direnv allow
+          direnv exec . true
+
+          test -f .claude/settings.json
+          # Byte-identical, not merely equivalent: a fresh file is a copy, so the
+          # template's formatting is what a repository ends up committing.
+          cmp "$tpl" .claude/settings.json
+
+          # The second load is the common case - this runs on every cd - and it must not
+          # rewrite a tracked file, or every repository would sit permanently dirty.
+          before="$(sha256sum .claude/settings.json)"
+          direnv exec . true
+          test "$before" = "$(sha256sum .claude/settings.json)"
+
+      - name: An existing settings.json keeps its own keys and its own hooks
+        run: |
+          set -euo pipefail
+          repo="$(mktemp -d)"
+          git -C "$repo" init -q
+          printf 'use claude_env\n' > "$repo/.envrc"
+          mkdir -p "$repo/.claude"
+          cat > "$repo/.claude/settings.json" <<'JSON'
+          {
+            "permissions": { "allow": ["Bash(pixi run:*)"] },
+            "hooks": {
+              "SessionStart": [
+                { "matcher": "startup",
+                  "hooks": [ { "type": "command", "command": "echo mine" } ] }
+              ]
+            }
+          }
+          JSON
+          cd "$repo"
+          direnv allow
+          direnv exec . true
+
+          jq -e '.permissions.allow == ["Bash(pixi run:*)"]'          .claude/settings.json >/dev/null
+          # The repository's own hook survives, in place, with its matcher intact.
+          jq -e '.hooks.SessionStart[0].matcher == "startup"'         .claude/settings.json >/dev/null
+          jq -e '.hooks.SessionStart[0].hooks[0].command == "echo mine"' .claude/settings.json >/dev/null
+          # Ours are appended: two SessionStart entries plus the one already there.
+          jq -e '.hooks.SessionStart | length == 3'                   .claude/settings.json >/dev/null
+          jq -e '.hooks.CwdChanged  | length == 1'                    .claude/settings.json >/dev/null
+          jq -e '[.. | .command? // empty] | map(select(test("CLAUDE_ENV_FILE"))) | length == 2' \
+            .claude/settings.json >/dev/null
+
+          # And merging is idempotent too, not just creation.
+          before="$(sha256sum .claude/settings.json)"
+          direnv exec . true
+          test "$before" = "$(sha256sum .claude/settings.json)"
+
+      - name: An unparseable settings.json is left exactly as it was
+        run: |
+          set -euo pipefail
+          repo="$(mktemp -d)"
+          git -C "$repo" init -q
+          printf 'use claude_env\n' > "$repo/.envrc"
+          mkdir -p "$repo/.claude"
+          printf 'this is not json {\n' > "$repo/.claude/settings.json"
+          cd "$repo"
+          direnv allow
+          # Must not fail the load: the .envrc still has to export everything else.
+          direnv exec . true
+          test "$(cat .claude/settings.json)" = 'this is not json {'
+
+      - name: The file lands at the repository root, not beside a nested .envrc
+        run: |
+          set -euo pipefail
+          repo="$(mktemp -d)"
+          git -C "$repo" init -q
+          mkdir -p "$repo/services/api"
+          printf 'use claude_env\n' > "$repo/services/api/.envrc"
+          cd "$repo/services/api"
+          direnv allow
+          direnv exec . true
+
+          # The root is the only place Claude Code reads it from.
+          test -f "$repo/.claude/settings.json"
+          test ! -e "$repo/services/api/.claude"
+
+  # The one context main-protection requires for this workflow, rather than each job by
+  # name: one entry in the ruleset instead of one per job, and a job renamed above cannot
+  # quietly stop gating. Today there is a single job, but this workflow is the one most
+  # likely to grow another (a second distro, an arm64 variant), and the ruleset should not
+  # have to change when it does.
+  #
+  # ANY JOB ADDED ABOVE MUST BE ADDED TO needs: - a job left out runs but gates nothing.
+  #
+  # The name carries this workflow's prefix because a required context is matched by NAME:
+  # two workflows whose aggregates were both called `tests-pass` would leave one required
+  # context standing for two different check runs, and GitHub documents no rule for which
+  # of them it then gates on. One context per workflow, each matching exactly one job.
+  #
+  # `if: always()` is load-bearing: without it this job is skipped when an upstream job
+  # fails, and a skipped job reports Success, so the gate would pass precisely when it
+  # should not.
+  claude-env-tests-pass:
+    if: always()
+    needs:
+      - scaffold-and-merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert every job succeeded
+        env:
+          FAILED: ${{ contains(needs.*.result, 'failure') }}
+          CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
+        run: |
+          set -euo pipefail
+          if [[ "$FAILED" != "false" || "$CANCELLED" != "false" ]]; then
+            echo "claude-env tests did not all pass (failure=$FAILED cancelled=$CANCELLED)" >&2
+            exit 1
+          fi
