@@ -23,12 +23,12 @@ jobs:
       # download one at runtime (a transient point of failure). Paired with
       # sonar.scanner.skipJreProvisioning below.
       - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
           java-version: '17'
       - name: SonarQube Cloud Scan
-        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        uses: SonarSource/sonarqube-scan-action@70bad232163b09d998ea0707ee80c0ec80798c16 # v8.5.1
         with:
           args: -Dsonar.scanner.skipJreProvisioning=true
         env:
